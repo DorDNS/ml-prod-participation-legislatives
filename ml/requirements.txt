@@ -1,0 +1,5 @@
+# Dependencies for data preparation, training and the continuous training workflow.
+-r ../requirements.txt
+dvc[azure]==3.67.1
+mlflow==3.18.0
+pyarrow==26.0.1

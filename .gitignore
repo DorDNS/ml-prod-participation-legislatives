@@ -6,3 +6,5 @@ __pycache__/
 mlruns/
 .dvc/config.local
 .DS_Store
+.pytest_cache/
+.ruff_cache/

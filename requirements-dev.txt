@@ -1,0 +1,5 @@
+# Development and CI dependencies (tests and lint).
+-r requirements.txt
+pytest
+httpx
+ruff
