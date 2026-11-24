@@ -1,5 +1,7 @@
 """Tests for readiness and model info. No network and no MLflow calls."""
 
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -29,8 +31,8 @@ def client():
     return TestClient(app)
 
 
-def load_fake_model(version: str = "7") -> None:
-    app.state.model_state = ModelState(model=FakeModel(), version=version)
+def load_fake_model(version: str = "7", run_id: str = "run-abc") -> None:
+    app.state.model_state = ModelState(model=FakeModel(), version=version, run_id=run_id)
 
 
 def test_health_is_up_without_model(client):
@@ -40,6 +42,7 @@ def test_health_is_up_without_model(client):
 def test_ready_returns_503_when_model_is_not_loaded(client):
     response = client.get("/ready")
     assert response.status_code == 503
+    assert response.json() == {"ready": False}
 
 
 def test_model_info_returns_503_when_model_is_not_loaded(client):
@@ -54,13 +57,14 @@ def test_ready_returns_200_when_model_is_loaded(client):
 
 
 def test_model_info_reports_the_loaded_version(client):
-    load_fake_model(version="7")
+    load_fake_model(version="7", run_id="run-abc")
     response = client.get("/model-info")
     assert response.status_code == 200
     assert response.json() == {
         "model_name": "polling-station-turnout",
         "alias": "champion",
         "version": "7",
+        "run_id": "run-abc",
     }
 
 
@@ -71,6 +75,7 @@ def test_startup_loads_the_model(monkeypatch):
         lambda: ModelState(model=FakeModel(), version="3"),
     )
     with TestClient(app) as client:
+        app.state.loader_thread.join(timeout=5)
         assert client.get("/ready").status_code == 200
         assert client.get("/model-info").json()["version"] == "3"
 
@@ -81,5 +86,22 @@ def test_startup_survives_a_registry_failure(monkeypatch):
 
     monkeypatch.setattr(main, "load_champion", fail)
     with TestClient(app) as client:
+        app.state.loader_thread.join(timeout=5)
         assert client.get("/health").status_code == 200
         assert client.get("/ready").status_code == 503
+
+
+def test_health_answers_while_the_model_is_still_loading(monkeypatch):
+    release = threading.Event()
+
+    def slow_load():
+        release.wait(timeout=5)
+        return ModelState(model=FakeModel(), version="3")
+
+    monkeypatch.setattr(main, "load_champion", slow_load)
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/ready").status_code == 503
+        release.set()
+        app.state.loader_thread.join(timeout=5)
+        assert client.get("/ready").status_code == 200
