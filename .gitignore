@@ -1,4 +1,6 @@
-data/
+data/*.parquet
+data/*.geojson
+data/*.csv
 .venv/
 __pycache__/
 *.pyc
