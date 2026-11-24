@@ -3,3 +3,4 @@
 pytest
 httpx
 ruff
+pyarrow==26.0.1
