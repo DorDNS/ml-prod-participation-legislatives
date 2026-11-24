@@ -1,10 +1,13 @@
 import numpy as np
 import pandas as pd
 import pytest
+from mlflow.exceptions import MlflowException
 
+from ml import train as train_module
 from ml.dataset import FEATURES, TARGET
 from ml.train import (
     build_model,
+    champion_comparison,
     persistence_mae,
     predict_turnout,
     read_dvc_md5,
@@ -62,3 +65,42 @@ def test_read_dvc_md5_rejects_a_file_without_hash(tmp_path):
     pointer.write_text("outs: []\n")
     with pytest.raises(ValueError):
         read_dvc_md5(pointer)
+
+
+class FakeModelVersion:
+    def __init__(self):
+        self.version = "1"
+        self.tags = {"mae": "3.0", "dataset_version": "v1"}
+
+
+class FakeClient:
+    """Stands in for MlflowClient: has a champion, or none."""
+
+    def __init__(self, champion=None):
+        self.champion = champion
+
+    def get_model_version_by_alias(self, name, alias):
+        if self.champion is None:
+            raise MlflowException("no champion")
+        return self.champion
+
+
+class ConstantModel:
+    def predict(self, data):
+        return np.full(len(data), 55.0)
+
+
+def test_champion_comparison_is_none_without_champion():
+    assert champion_comparison(FakeClient(), "model", make_table()) is None
+
+
+def test_champion_comparison_measures_the_champion_on_the_given_rows(monkeypatch):
+    monkeypatch.setattr(
+        train_module.mlflow.pyfunc, "load_model", lambda uri: ConstantModel()
+    )
+    table = make_table().head(10)
+    result = champion_comparison(FakeClient(FakeModelVersion()), "model", table)
+    assert result["mae"] == pytest.approx(float((table[TARGET] - 55.0).abs().mean()))
+    assert result["version"] == "1"
+    assert result["dataset_version"] == "v1"
+    assert result["mae_reference"] == pytest.approx(3.0)

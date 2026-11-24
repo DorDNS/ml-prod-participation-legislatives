@@ -15,7 +15,8 @@ MLFLOW_TRACKING_PASSWORD must be set):
     # Initial release: register the model and give it the alias "champion"
     python -m ml.train --dataset-version v1 --bootstrap
 
-    # Candidate: register the model without touching the alias
+    # Candidate: register the model without touching the alias. If a champion
+    # exists, its MAE is measured on the same evaluation rows (champion_mae).
     python -m ml.train --dataset-version v2 --register --output candidate.json
 """
 
@@ -27,6 +28,7 @@ import subprocess
 from pathlib import Path
 
 import mlflow
+import mlflow.pyfunc
 import mlflow.sklearn
 import numpy as np
 import pandas as pd
@@ -127,6 +129,30 @@ def git_state() -> tuple[str, bool]:
     return sha, bool(status)
 
 
+def champion_comparison(
+    client: MlflowClient, model_name: str, evaluation: pd.DataFrame
+) -> dict | None:
+    """Measure the current champion on the same rows as the candidate.
+
+    Returns None when there is no champion yet. The reference MAE is the one
+    stored as a tag when the champion was registered (on its own data).
+    """
+    try:
+        champion = client.get_model_version_by_alias(model_name, ALIAS)
+    except MlflowException:
+        return None
+    model = mlflow.pyfunc.load_model(f"models:/{model_name}/{champion.version}")
+    predictions = np.clip(np.asarray(model.predict(evaluation[FEATURES])), 0, 100)
+    tags = champion.tags or {}
+    reference = tags.get("mae")
+    return {
+        "version": str(champion.version),
+        "dataset_version": tags.get("dataset_version"),
+        "mae_reference": float(reference) if reference is not None else None,
+        "mae": float(mean_absolute_error(evaluation[TARGET], predictions.ravel())),
+    }
+
+
 def alias_exists(client: MlflowClient, model_name: str) -> bool:
     try:
         client.get_model_version_by_alias(model_name, ALIAS)
@@ -177,6 +203,10 @@ def main() -> None:
     }
     metrics["mae_gain_vs_persistence"] = metrics["mae_persistence"] - metrics["mae"]
     metrics.update(chronological_metrics(table, params))
+    champion = champion_comparison(client, args.model_name, evaluation)
+    if champion is not None:
+        metrics["champion_mae"] = champion["mae"]
+        metrics["mae_gain_vs_champion"] = champion["mae"] - metrics["mae"]
 
     git_sha, git_dirty = git_state()
     dvc_md5 = read_dvc_md5(Path(args.dvc_file))
@@ -199,6 +229,9 @@ def main() -> None:
                 "n_train": len(train),
                 "n_eval": len(evaluation),
                 "model": "HistGradientBoostingRegressor",
+                "compared_with_champion_version": (
+                    champion["version"] if champion else "none"
+                ),
                 **params,
             }
         )
@@ -239,7 +272,12 @@ def main() -> None:
         if args.bootstrap:
             client.set_registered_model_alias(args.model_name, ALIAS, version)
 
-    summary = {**report, "run_id": run.info.run_id, "model_version": version}
+    summary = {
+        **report,
+        "run_id": run.info.run_id,
+        "model_version": version,
+        "champion": champion,
+    }
     print(json.dumps(summary, indent=2))
     if args.output:
         Path(args.output).write_text(json.dumps(summary, indent=2))
