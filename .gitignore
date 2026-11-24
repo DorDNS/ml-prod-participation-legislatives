@@ -1,4 +1,6 @@
-data/
+data/*.parquet
+data/*.geojson
+data/*.csv
 .venv/
 __pycache__/
 *.pyc
@@ -6,3 +8,5 @@ __pycache__/
 mlruns/
 .dvc/config.local
 .DS_Store
+.pytest_cache/
+.ruff_cache/

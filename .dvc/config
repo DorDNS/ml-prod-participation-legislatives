@@ -1,0 +1,5 @@
+[core]
+    remote = myazure
+['remote "myazure"']
+    url = azure://dvc/ml-prod-participation-legislatives
+    account_name = wut2026
