@@ -2,10 +2,13 @@ name: Publish image
 
 # Builds the Docker image and publishes it to GitHub Container Registry,
 # tagged with the commit SHA. The hosting platform deploys exactly this tag.
+# The image for main is built by prod.yml, which calls this workflow
+# (workflow_call) before deploying, so main is not listed under push.
 on:
   push:
-    branches: [dev, staging, main]
+    branches: [dev, staging]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
