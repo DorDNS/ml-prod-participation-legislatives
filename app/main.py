@@ -2,11 +2,13 @@
 
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import mlflow.pyfunc
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from mlflow import MlflowClient
 
 logger = logging.getLogger("turnout-api")
@@ -23,6 +25,7 @@ class ModelState:
     name: str = MODEL_NAME
     alias: str = MODEL_ALIAS
     version: str | None = None
+    run_id: str | None = None
 
     @property
     def loaded(self) -> bool:
@@ -32,19 +35,33 @@ class ModelState:
 def load_champion() -> ModelState:
     """Resolve the alias to a concrete version, then load exactly that version."""
     client = MlflowClient()
-    version = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS).version
-    model = mlflow.pyfunc.load_model(f"models:/{MODEL_NAME}/{version}")
-    return ModelState(model=model, name=MODEL_NAME, alias=MODEL_ALIAS, version=str(version))
+    model_version = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
+    model = mlflow.pyfunc.load_model(f"models:/{MODEL_NAME}/{model_version.version}")
+    return ModelState(
+        model=model,
+        name=MODEL_NAME,
+        alias=MODEL_ALIAS,
+        version=str(model_version.version),
+        run_id=model_version.run_id,
+    )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Load the model once at startup; stay alive but not ready if it fails."""
+def load_in_background(app: FastAPI) -> None:
+    """Load the model without blocking the server; stay not ready on failure."""
     try:
         app.state.model_state = load_champion()
         logger.info("Loaded %s version %s", MODEL_NAME, app.state.model_state.version)
     except Exception:
         logger.exception("Could not load the champion model; the API is not ready")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start loading the model in a thread so /health answers immediately."""
+    app.state.loader_thread = threading.Thread(
+        target=load_in_background, args=(app,), daemon=True
+    )
+    app.state.loader_thread.start()
     yield
 
 
@@ -68,14 +85,20 @@ def health() -> dict[str, str]:
 
 
 @app.get("/ready")
-def ready(request: Request) -> dict[str, bool]:
+def ready(request: Request) -> JSONResponse:
     """Readiness probe: 200 only when the model is loaded, 503 otherwise."""
-    get_loaded_state(request)
-    return {"ready": True}
+    if not request.app.state.model_state.loaded:
+        return JSONResponse(status_code=503, content={"ready": False})
+    return JSONResponse(content={"ready": True})
 
 
 @app.get("/model-info")
 def model_info(request: Request) -> dict[str, str | None]:
     """Report which model version is actually loaded."""
     state = get_loaded_state(request)
-    return {"model_name": state.name, "alias": state.alias, "version": state.version}
+    return {
+        "model_name": state.name,
+        "alias": state.alias,
+        "version": state.version,
+        "run_id": state.run_id,
+    }
