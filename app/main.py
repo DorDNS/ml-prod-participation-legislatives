@@ -7,15 +7,25 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import mlflow.pyfunc
+import numpy as np
+import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from mlflow import MlflowClient
+
+from app.schemas import PredictionRequest, PredictionResponse
 
 logger = logging.getLogger("turnout-api")
 
 MODEL_NAME = os.environ.get("MODEL_NAME", "polling-station-turnout")
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "champion")
-
+FEATURE_COLUMNS = [
+    "prev_turnout",
+    "prev2_turnout",
+    "registered",
+    "dept_code",
+    "election_year",
+]
 
 @dataclass
 class ModelState:
@@ -102,3 +112,14 @@ def model_info(request: Request) -> dict[str, str | None]:
         "version": state.version,
         "run_id": state.run_id,
     }
+
+@app.post("/predict")
+def predict(payload: PredictionRequest, request: Request) -> PredictionResponse:
+    """Predict the turnout (in %) of a polling station."""
+    state = get_loaded_state(request)
+    row = pd.DataFrame([payload.model_dump()], columns=FEATURE_COLUMNS)
+    row = row.astype({"registered": "float64", "election_year": "int64"})
+    raw_prediction = float(np.asarray(state.model.predict(row)).ravel()[0])
+    # A turnout is a percentage: keep it inside [0, 100]
+    turnout_pct = min(100.0, max(0.0, raw_prediction))
+    return PredictionResponse(turnout_pct=turnout_pct, model_version=state.version)
