@@ -25,3 +25,22 @@ jobs:
         run: python -m ruff check .
       - name: Test
         run: python -m pytest
+        
+  docker-build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build image
+        run: docker build -t polling-turnout:${{ github.sha }} .
+      - name: Run container
+        run: docker run -d --name app -p 8000:8000 polling-turnout:${{ github.sha }}
+      - name: Smoke test
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8000/health && exit 0
+            sleep 2
+          done
+          docker logs app
+          exit 1
