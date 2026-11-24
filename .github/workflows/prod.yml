@@ -1,0 +1,72 @@
+name: Production
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-image.yml
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+          ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$IMAGE")
+          curl -fsS -X POST "${RENDER_DEPLOY_HOOK_URL}&imgURL=${ENCODED}" > /dev/null
+          echo "Deploy requested for $IMAGE"
+
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    env:
+      PROD_URL: ${{ vars.PROD_URL }}
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
+      MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+      MODEL_NAME: polling-station-turnout
+      MODEL_ALIAS: champion
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install smoke test dependencies
+        run: pip install -r requirements.txt
+
+      - name: Smoke test on production
+        run: python scripts/smoke_test.py --url "$PROD_URL" --expect-champion --timeout 300
+
+      - name: Job summary
+        if: always()
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+          MODEL_INFO=$(curl -fsS "$PROD_URL/model-info" || echo "unavailable")
+          {
+            echo "## Production deployment"
+            echo ""
+            echo "- Image: \`$IMAGE\`"
+            echo "- URL: $PROD_URL"
+            echo "- Model served (\`/model-info\`): \`$MODEL_INFO\`"
+          } >> "$GITHUB_STEP_SUMMARY"
