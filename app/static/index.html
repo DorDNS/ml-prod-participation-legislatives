@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polling station turnout predictor</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 34rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.4; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; background: #8883; font-size: 0.85rem; }
+  form { display: grid; gap: 0.9rem; margin-top: 1.2rem; }
+  label { display: grid; gap: 0.25rem; font-weight: 600; }
+  label small { font-weight: 400; opacity: 0.75; }
+  input { padding: 0.5rem; font-size: 1rem; border: 1px solid #8886; border-radius: 0.4rem; }
+  button { padding: 0.7rem; font-size: 1rem; border: 0; border-radius: 0.4rem; background: #2563eb; color: #fff; cursor: pointer; }
+  button:disabled { opacity: 0.6; cursor: wait; }
+  #result { margin-top: 1.2rem; padding: 1rem; border-radius: 0.5rem; background: #8882; min-height: 1.5rem; }
+  #result.error { background: #dc262633; }
+  .big { font-size: 2rem; font-weight: 700; }
+  footer { margin-top: 1.5rem; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<h1>Polling station turnout predictor</h1>
+<p>Predicts the turnout (%) of a polling station at a legislative first round.
+Model served: <span id="model" class="badge">checking...</span></p>
+
+<form id="form">
+  <label>Previous turnout (%)
+    <small>Last legislative first round, from 0 to 100</small>
+    <input name="prev_turnout" type="number" min="0" max="100" step="any" value="55" required>
+  </label>
+  <label>Turnout before that (%)
+    <small>The first round before the previous one, from 0 to 100</small>
+    <input name="prev2_turnout" type="number" min="0" max="100" step="any" value="48" required>
+  </label>
+  <label>Registered voters
+    <small>Number of registered voters in the polling station</small>
+    <input name="registered" type="number" min="1" step="1" value="900" required>
+  </label>
+  <label>Department code
+    <small>For example 75, 13 or 2A (1 to 3 characters)</small>
+    <input name="dept_code" type="text" minlength="1" maxlength="3" value="75" required>
+  </label>
+  <label>Election year
+    <small>Between 2000 and 2100</small>
+    <input name="election_year" type="number" min="2000" max="2100" step="1" value="2024" required>
+  </label>
+  <button type="submit">Predict</button>
+</form>
+
+<div id="result" aria-live="polite">The prediction will appear here.</div>
+
+<footer>
+  <a href="/docs">API documentation</a> | <a href="/model-info">Model info</a>
+</footer>
+
+<script>
+  const form = document.getElementById("form");
+  const result = document.getElementById("result");
+  const modelBadge = document.getElementById("model");
+  const button = form.querySelector("button");
+
+  function showMessage(text, isError) {
+    result.className = isError ? "error" : "";
+    result.textContent = text;
+  }
+
+  function showPrediction(turnout, version) {
+    result.className = "";
+    result.replaceChildren();
+    const big = document.createElement("div");
+    big.className = "big";
+    big.textContent = turnout.toFixed(1) + " %";
+    const detail = document.createElement("div");
+    detail.textContent = "Predicted turnout, model version " + version;
+    result.append(big, detail);
+  }
+
+  async function loadModelInfo() {
+    try {
+      const response = await fetch("/model-info");
+      if (!response.ok) {
+        modelBadge.textContent = "not loaded yet";
+        return;
+      }
+      const info = await response.json();
+      modelBadge.textContent = info.model_name + " version " + info.version;
+    } catch (error) {
+      modelBadge.textContent = "unavailable";
+    }
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const payload = {
+      prev_turnout: Number(data.get("prev_turnout")),
+      prev2_turnout: Number(data.get("prev2_turnout")),
+      registered: Number(data.get("registered")),
+      dept_code: String(data.get("dept_code")).trim(),
+      election_year: Number(data.get("election_year")),
+    };
+    button.disabled = true;
+    showMessage("Predicting...", false);
+    try {
+      const response = await fetch("/predict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (response.status === 422) {
+        showMessage("Invalid input: check the values and their ranges.", true);
+      } else if (response.status === 503) {
+        showMessage("The model is still loading, try again in a few seconds.", true);
+      } else if (!response.ok) {
+        showMessage("Unexpected error (HTTP " + response.status + ").", true);
+      } else {
+        const body = await response.json();
+        showPrediction(body.turnout_pct, body.model_version);
+        loadModelInfo();
+      }
+    } catch (error) {
+      showMessage("Could not reach the API.", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  loadModelInfo();
+</script>
+</body>
+</html>
