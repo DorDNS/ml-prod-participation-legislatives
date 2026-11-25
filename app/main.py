@@ -6,12 +6,13 @@ import sys
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 import mlflow.pyfunc
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from mlflow import MlflowClient
 
 from app.schemas import PredictionRequest, PredictionResponse
@@ -92,6 +93,15 @@ def get_loaded_state(request: Request) -> ModelState:
     if not state.loaded:
         raise HTTPException(status_code=503, detail="Model not loaded")
     return state
+
+
+PAGE_PATH = Path(__file__).parent / "static" / "index.html"
+
+
+@app.get("/", include_in_schema=False)
+def home() -> HTMLResponse:
+    """Small web page to try the model from a browser."""
+    return HTMLResponse(PAGE_PATH.read_text(encoding="utf-8"))
 
 
 @app.get("/health")
