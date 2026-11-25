@@ -28,8 +28,6 @@ jobs:
         
   docker-build-and-smoke:
     runs-on: ubuntu-latest
-    env:
-      REGISTRY_DIR: ${{ runner.temp }}/test-registry
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,6 +41,8 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Create a test model registry
         run: |
+          REGISTRY_DIR="$RUNNER_TEMP/test-registry"
+          echo "REGISTRY_DIR=$REGISTRY_DIR" >> "$GITHUB_ENV"
           python scripts/make_test_registry.py --path "$REGISTRY_DIR"
           chmod -R a+rX "$REGISTRY_DIR"
       - name: Build image
