@@ -1,5 +1,6 @@
 """Tests for readiness and model info. No network and no MLflow calls."""
 
+import logging
 import threading
 
 import pytest
@@ -77,17 +78,21 @@ def test_model_info_reports_the_loaded_version(client):
     }
 
 
-def test_startup_loads_the_model(monkeypatch):
+def test_startup_loads_the_model(monkeypatch, caplog):
     monkeypatch.setattr(
         main,
         "load_champion",
         lambda: ModelState(model=FakeModel(), version="3"),
     )
-    with TestClient(app) as client:
+    with (
+        caplog.at_level(logging.INFO, logger="turnout-api"),
+        TestClient(app) as client,
+    ):
         app.state.loader_thread.join(timeout=5)
         assert client.get("/ready").status_code == 200
         assert client.get("/model-info").json()["version"] == "3"
-
+    assert "version 3" in caplog.text
+    
 
 def test_startup_survives_a_registry_failure(monkeypatch):
     def fail():

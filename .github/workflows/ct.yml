@@ -1,0 +1,229 @@
+name: Continuous training
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "pipeline = train, decide, promote. rollback = move the champion back."
+        type: choice
+        options: [pipeline, rollback]
+        default: pipeline
+      dataset_version:
+        description: "Dataset version for the pipeline (Git tag data-<version> must exist), e.g. v2"
+        type: string
+        default: v2
+      rollback_version:
+        description: "Model version to roll back to (rollback only, must have been champion)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: continuous-training
+  cancel-in-progress: false
+
+env:
+  MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+  MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
+  MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+  MODEL_NAME: polling-station-turnout
+  MODEL_ALIAS: champion
+  PROD_URL: ${{ vars.PROD_URL }}
+
+jobs:
+  validate:
+    if: inputs.operation == 'pipeline'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the dataset version
+        env:
+          DATASET_VERSION: ${{ inputs.dataset_version }}
+        run: |
+          if ! [[ "$DATASET_VERSION" =~ ^v[0-9]+$ ]]; then
+            echo "::error::dataset_version must look like v1, v2, ... (got '$DATASET_VERSION')"
+            exit 1
+          fi
+          if ! git rev-parse --verify --quiet "refs/tags/data-${DATASET_VERSION}" > /dev/null; then
+            echo "::error::Git tag data-${DATASET_VERSION} does not exist"
+            exit 1
+          fi
+          echo "Dataset version $DATASET_VERSION is valid (tag data-${DATASET_VERSION} found)."
+
+  train:
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      model_version: ${{ steps.candidate.outputs.model_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt "dvc[azure]==3.67.1"
+      - name: Restore the DVC pointer of the dataset version
+        env:
+          DATASET_VERSION: ${{ inputs.dataset_version }}
+        run: git checkout "data-${DATASET_VERSION}" -- data/modeling_table.parquet.dvc
+      - name: Pull the data from Azure
+        env:
+          AZURE_SAS_TOKEN: ${{ secrets.AZURE_SAS_TOKEN }}
+        run: |
+          dvc remote modify --local myazure sas_token "$AZURE_SAS_TOKEN"
+          dvc pull
+      - name: Train, evaluate and register the candidate
+        env:
+          DATASET_VERSION: ${{ inputs.dataset_version }}
+        run: python -m ml.train --dataset-version "$DATASET_VERSION" --register --output candidate.json
+      - name: Read the candidate model version
+        id: candidate
+        run: |
+          VERSION=$(python -c "import json; print(json.load(open('candidate.json'))['model_version'])")
+          echo "model_version=$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate
+          path: candidate.json
+
+  decide:
+    needs: train
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.decision.outputs.action }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate
+      - name: Apply the promotion rule
+        id: decision
+        run: |
+          python3 -m ml.policy decide --candidate candidate.json --output decision.json
+          echo "action=$(python3 -c "import json; print(json.load(open('decision.json'))['action'])")" >> "$GITHUB_OUTPUT"
+      - name: Job summary
+        run: |
+          {
+            echo "## Promotion decision"
+            echo ""
+            echo '```json'
+            cat decision.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decision
+          path: decision.json
+
+  promote:
+    needs: [train, decide]
+    if: needs.decide.outputs.action == 'promote'
+    runs-on: ubuntu-latest
+    env:
+      NEW_VERSION: ${{ needs.train.outputs.model_version }}
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Move the champion alias to the candidate
+        run: python -m ml.promote promote --version "$NEW_VERSION" --output promotion.json
+      - name: Redeploy so the service loads the new champion
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+          ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$IMAGE")
+          curl -fsS -X POST "${RENDER_DEPLOY_HOOK_URL}&imgURL=${ENCODED}" > /dev/null
+          echo "Redeploy requested for $IMAGE"
+      - name: Wait until production serves the new version
+        run: |
+          for i in $(seq 1 60); do
+            SERVED=$(curl -fsS --max-time 30 "$PROD_URL/model-info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)
+            echo "attempt $i: served version '${SERVED}', expected '${NEW_VERSION}'"
+            if [ "$SERVED" = "$NEW_VERSION" ]; then exit 0; fi
+            sleep 10
+          done
+          echo "::error::Production did not serve version ${NEW_VERSION} within 10 minutes"
+          exit 1
+      - name: Smoke test with the expected version
+        run: python scripts/smoke_test.py --url "$PROD_URL" --expect-version "$NEW_VERSION" --timeout 300
+      - name: Job summary
+        run: |
+          {
+            echo "## Promotion verified"
+            echo ""
+            echo "- Champion is now version \`$NEW_VERSION\`"
+            echo "- Production URL: $PROD_URL"
+            echo "- Model served: \`$(curl -fsS "$PROD_URL/model-info")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  rollback:
+    if: inputs.operation == 'rollback'
+    runs-on: ubuntu-latest
+    env:
+      TARGET_VERSION: ${{ inputs.rollback_version }}
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Check the input
+        run: |
+          if ! [[ "$TARGET_VERSION" =~ ^[0-9]+$ ]]; then
+            echo "::error::rollback_version must be a model version number (got '$TARGET_VERSION')"
+            exit 1
+          fi
+      - name: Move the champion alias back
+        run: python -m ml.promote rollback --version "$TARGET_VERSION" --output rollback.json
+      - name: Redeploy so the service loads the restored champion
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+          ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$IMAGE")
+          curl -fsS -X POST "${RENDER_DEPLOY_HOOK_URL}&imgURL=${ENCODED}" > /dev/null
+          echo "Redeploy requested for $IMAGE"
+      - name: Wait until production serves the restored version
+        run: |
+          for i in $(seq 1 60); do
+            SERVED=$(curl -fsS --max-time 30 "$PROD_URL/model-info" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)
+            echo "attempt $i: served version '${SERVED}', expected '${TARGET_VERSION}'"
+            if [ "$SERVED" = "$TARGET_VERSION" ]; then exit 0; fi
+            sleep 10
+          done
+          echo "::error::Production did not serve version ${TARGET_VERSION} within 10 minutes"
+          exit 1
+      - name: Smoke test with the expected version
+        run: python scripts/smoke_test.py --url "$PROD_URL" --expect-version "$TARGET_VERSION" --timeout 300
+      - name: Job summary
+        run: |
+          {
+            echo "## Rollback verified"
+            echo ""
+            echo "- Champion is back to version \`$TARGET_VERSION\`"
+            echo "- Production URL: $PROD_URL"
+            echo "- Model served: \`$(curl -fsS "$PROD_URL/model-info")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
