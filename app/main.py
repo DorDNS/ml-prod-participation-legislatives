@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -15,6 +16,11 @@ from mlflow import MlflowClient
 
 from app.schemas import PredictionRequest, PredictionResponse
 
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    stream=sys.stdout,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger("turnout-api")
 
 MODEL_NAME = os.environ.get("MODEL_NAME", "polling-station-turnout")
