@@ -6,11 +6,11 @@ This document explains how the application is built, configured and deployed, an
 
 | Trigger | File | Jobs |
 |---|---|---|
-| Pull request to `dev`, `staging` or `main` | `ci.yml` | `lint-and-test`: ruff and pytest<br>`docker-build-and-smoke`: builds the image, starts the container, checks `/health` |
+| Pull request to `dev`, `staging` or `main` | `ci.yml` | `lint-and-test`: ruff and pytest<br>`docker-build-and-smoke`: builds the image, creates a test model registry (`scripts/make_test_registry.py`), starts the container with that test model and runs the smoke test with `--expect-version 1` |
 | Push to `dev` (or manual run) | `publish-image.yml` | `publish`: builds the image and pushes it to ghcr.io, tagged with the commit SHA |
 | Push to `staging` | `publish-image.yml` and `staging.yml` (run in parallel) | `publish` (as above)<br>`build-and-smoke`: builds the image, starts the container in GitHub Actions with the real `champion` model, runs the smoke test with `--expect-champion` |
 | Push to `main` | `prod.yml` | `publish`: reuses `publish-image.yml`<br>`deploy`: calls the Render deploy hook with the image of the commit SHA<br>`verify`: smoke test on the production URL with `--expect-champion` (up to 300 s for the cold start) |
-| Manual (`workflow_dispatch`), `operation = pipeline` | `ct.yml` | `validate`: checks the dataset version and its Git tag<br>`train`: pulls the data with DVC, trains, evaluates and registers the candidate<br>`decide`: applies the promotion rule (`ml/policy.py`)<br>`promote`: only if the decision is `promote` |
+| Manual (`workflow_dispatch`), `operation = pipeline` | `ct.yml` | `validate`: checks the dataset version and its Git tag<br>`train`: pulls the data with DVC, validates the data contract and the train/evaluation split (`ml/validate.py`), trains, evaluates and registers the candidate<br>`decide`: applies the promotion rule (`ml/policy.py`)<br>`promote`: only if the decision is `promote` |
 | Manual (`workflow_dispatch`), `operation = rollback` | `ct.yml` | `rollback`: moves the `champion` alias back to a previous version |
 
 ## Twelve-factor checklist
