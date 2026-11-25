@@ -8,6 +8,8 @@ The focus is the MLOps pipeline around the model: versioned data (DVC on Azure),
 
 The service is on Render's free plan: the first request after 15 minutes without traffic can take about a minute.
 
+Open the production URL in a browser to try the model with a simple form (the interactive API documentation is on `/docs`).
+
 ## Documentation
 
 - [`DEPLOYMENT.md`](DEPLOYMENT.md): workflows, twelve-factor checklist, configuration, promotion and rollback, how to reproduce a deployment
