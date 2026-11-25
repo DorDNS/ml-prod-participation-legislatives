@@ -10,6 +10,49 @@ The service is on Render's free plan: the first request after 15 minutes without
 
 Open the production URL in a browser to try the model with a simple form (the interactive API documentation is on `/docs`).
 
+## Try the API
+
+Production URL: <https://turnout-api-g0tp.onrender.com> (a browser form on `/`, interactive documentation on `/docs`). The first request after a pause can take about a minute.
+
+**Inputs of `POST /predict`:**
+
+| Field | Meaning | Valid values |
+|---|---|---|
+| `prev_turnout` | Turnout of the previous first round, in % | 0 to 100 |
+| `prev2_turnout` | Turnout of the first round before that, in % | 0 to 100 |
+| `registered` | Registered voters of the polling station | greater than 0 |
+| `dept_code` | Department code, for example `"75"` or `"2A"` | 1 to 3 characters |
+| `election_year` | Year of the election to predict | 2000 to 2100 |
+
+**Sample inputs.** Three real polling stations of the 2022 first round (`election_year` 2022; the previous turnouts are those of 2017 and 2012). The observed turnout is given for comparison only: the API does not receive it.
+
+| Polling station | `prev_turnout` | `prev2_turnout` | `registered` | `dept_code` | Observed turnout |
+|---|---|---|---|---|---|
+| Paris (`75056_1308`) | 55.5 | 61.1 | 1496 | `75` | 59.0 % |
+| Marseille (`13055_0703`) | 50.9 | 59.2 | 978 | `13` | 49.9 % |
+| Corsica (`2A004_0020`) | 44.4 | 50.7 | 1016 | `2A` | 44.3 % |
+
+```bash
+URL=https://turnout-api-g0tp.onrender.com
+
+# Which model version is served
+curl "$URL/model-info"
+
+# Paris
+curl -X POST "$URL/predict" -H "Content-Type: application/json" \
+  -d '{"prev_turnout": 55.5, "prev2_turnout": 61.1, "registered": 1496, "dept_code": "75", "election_year": 2022}'
+
+# Marseille
+curl -X POST "$URL/predict" -H "Content-Type: application/json" \
+  -d '{"prev_turnout": 50.9, "prev2_turnout": 59.2, "registered": 978, "dept_code": "13", "election_year": 2022}'
+
+# Corsica
+curl -X POST "$URL/predict" -H "Content-Type: application/json" \
+  -d '{"prev_turnout": 44.4, "prev2_turnout": 50.7, "registered": 1016, "dept_code": "2A", "election_year": 2022}'
+```
+
+A successful answer looks like `{"turnout_pct": <number between 0 and 100>, "model_version": "<version>"}`. An input out of range (for example `"prev_turnout": 120`) is refused with status 422.
+
 ## Documentation
 
 - [`DEPLOYMENT.md`](DEPLOYMENT.md): workflows, twelve-factor checklist, configuration, promotion and rollback, how to reproduce a deployment
