@@ -42,6 +42,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
 from ml.dataset import FEATURES, HOLDOUT_SHARE, TARGET, split_train_eval
+from ml.validate import DataValidationError, validate
 
 CATEGORICAL = ["dept_code"]
 NUMERIC = [name for name in FEATURES if name not in CATEGORICAL]
@@ -161,6 +162,16 @@ def alias_exists(client: MlflowClient, model_name: str) -> bool:
     return True
 
 
+def load_table(path: str) -> pd.DataFrame:
+    """Read the modelling table and stop before any training if it is invalid."""
+    table = pd.read_parquet(path)
+    try:
+        validate(table)
+    except DataValidationError as error:
+        raise SystemExit(str(error)) from error
+    return table
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train and log the turnout model.")
     parser.add_argument("--data", default="data/modeling_table.parquet")
@@ -190,7 +201,7 @@ def main() -> None:
             "--bootstrap is only for the initial release."
         )
 
-    table = pd.read_parquet(args.data)
+    table = load_table(args.data)
     train, evaluation = split_train_eval(table)
     params = {"max_iter": args.max_iter, "learning_rate": args.learning_rate}
 

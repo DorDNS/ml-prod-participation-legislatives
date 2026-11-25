@@ -82,6 +82,8 @@ jobs:
         run: |
           dvc remote modify --local myazure sas_token "$AZURE_SAS_TOKEN"
           dvc pull
+      - name: Validate the data
+        run: python -m ml.validate --data data/modeling_table.parquet
       - name: Train, evaluate and register the candidate
         env:
           DATASET_VERSION: ${{ inputs.dataset_version }}
@@ -120,6 +122,7 @@ jobs:
             echo ""
             echo '```json'
             cat decision.json
+            echo
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
