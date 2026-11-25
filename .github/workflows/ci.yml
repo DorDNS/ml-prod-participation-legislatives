@@ -32,15 +32,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Create a test model registry
+        run: |
+          REGISTRY_DIR="$RUNNER_TEMP/test-registry"
+          echo "REGISTRY_DIR=$REGISTRY_DIR" >> "$GITHUB_ENV"
+          python scripts/make_test_registry.py --path "$REGISTRY_DIR"
+          chmod -R a+rX "$REGISTRY_DIR"
       - name: Build image
         run: docker build -t polling-turnout:${{ github.sha }} .
-      - name: Run container
-        run: docker run -d --name app -p 8000:8000 polling-turnout:${{ github.sha }}
-      - name: Smoke test
+      - name: Run container with the test model
         run: |
-          for i in $(seq 1 30); do
-            curl -fsS http://localhost:8000/health && exit 0
-            sleep 2
-          done
-          docker logs app
-          exit 1
+          docker run -d --name app -p 8000:8000 \
+            -v "$REGISTRY_DIR:$REGISTRY_DIR:ro" \
+            -e MLFLOW_ALLOW_FILE_STORE=true \
+            -e MLFLOW_TRACKING_URI="file://$REGISTRY_DIR" \
+            polling-turnout:${{ github.sha }}
+      - name: Smoke test
+        run: python scripts/smoke_test.py --url http://localhost:8000 --expect-version 1
+      - name: Show container logs
+        if: failure()
+        run: docker logs app
